@@ -17,20 +17,9 @@ def barycentric_integral(powers, volumes):
 
     """
     n = powers.shape[-1] - 1
-    integrals_on_ref = np.prod(factorial(powers), axis=-1) / factorial(np.sum(powers, axis=-1) + n)
+    integrals_on_ref = (np.prod(factorial(powers), axis=-1) /
+                        factorial(np.sum(powers, axis=-1) + n))
     return integrals_on_ref * factorial(n) * volumes[:, None, None]
-
-
-class whitney_indices(object):
-
-    def __init__(self):
-        self.indices = {}
-
-    def index(self, simplex, signature):
-        key = signature.key_on_simplex(simplex)
-        if key not in self.indices:
-            self.indices[key] = len(self.indices)
-        return self.indices[key]
 
 
 class whitney_element(object):
@@ -147,18 +136,24 @@ def inner(sc, u, v):
 
     metrics = np.array([np.inner(frame, frame) for frame in frames])
     dual_metrics = np.array(map(la.inv, metrics))
+
     volumes = np.sqrt(la.det(metrics)) / factorial(sc.complex_dimension())
+    # volumes[sc[-1].simplex_parity == 0] *= -1.0
+
+    print volumes
 
     coeffs = u.coeffs[:, None] * v.coeffs
-
     powers = u.powers[:, None] + v.powers
     integrals = barycentric_integral(powers, volumes)
 
+    # integrals_upper = ...
+    # integrals_lower = ... (all the same power...so same result.)
+
     diffs = barycentric_diffs(sc.complex_dimension())
+
     inners = np.array([np.dot(diffs.T, np.dot(dual_metric, diffs))
                        for dual_metric in dual_metrics])
 
-    # dets = np.empty((len(u.wedges), len(v.wedges), len(sc[-1].simplices)))
     dets = np.empty((len(sc[-1].simplices), len(u.wedges), len(v.wedges)))
 
     for i1, w1 in enumerate(u.wedges):
@@ -174,15 +169,20 @@ def inner(sc, u, v):
     return csr_matrix((data, (rows, cols)))
 
 
-def main():
+def test_orientation():
     vertices = np.array([
-        [0.0, 0.0, 0.0],
-        [1.0, 0.0, 2.0],
-        [0.0, 1.0, 3.0],
+        [0.0, 0.0],
+        [0.0, 1.0],
+        [1.0, 0.0],
+
+        [0.0, 0.0],
+        [0.0, 1.0],
+        [1.0, 0.0],
     ])
 
     simplices = np.array([
-        [0, 2, 1],
+        [0, 1, 2],
+        [3, 5, 4],
     ])
 
     sc = simplicial_complex(vertices, simplices)
@@ -211,20 +211,182 @@ def main():
 
     ordering = np.array([
         [0, 1, 2],
+        [3, 4, 5],
     ])
+
+    u = whitney_elements(indices, coeffs, powers, wedges, ordering)
+    K = inner(sc, u, u).todense()
+    assert np.allclose(K[:3, :3], -K[3:, 3:])
+
+
+def test_square():
+    vertices = np.array([
+        [0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
+    ])
+
+    simplices = np.array([
+        [0, 1, 2],
+        [1, 2, 3],
+    ])
+
+    sc = simplicial_complex(vertices, simplices)
+
+    indices = np.array([0, 0, 1, 1, 2, 2])
+
+    coeffs = np.array([1.0, -1.0, 1.0, -1.0, 1.0, -1.0])
+
+    powers = np.array([
+        [1, 0, 0],
+        [0, 1, 0],
+        [1, 0, 0],
+        [0, 0, 1],
+        [0, 1, 0],
+        [0, 0, 1],
+    ])
+
+    wedges = np.array([
+        [1],
+        [0],
+        [2],
+        [0],
+        [2],
+        [1],
+    ])
+
+    sigmas = np.array([
+        [0, 1],
+        [0, 2],
+        [1, 2],
+    ])
+
+    lookup = {}
+    ordering = []
+
+    for simplex in simplices:
+        simplex_ordering = []
+        for sigma in sigmas:
+            key = simplex[sigma].tostring()
+            if key not in lookup:
+                lookup[key] = len(lookup)
+            simplex_ordering.append(lookup[key])
+        ordering.append(simplex_ordering)
+
+    ordering = np.array(ordering)
 
     # consider factoring out a fem data {} object which
     # we can build into an extendable framework.
 
+    start = time.time()
     u = whitney_elements(indices, coeffs, powers, wedges, ordering)
-
     K1 = inner(sc, u, u).todense()
-    print K1
-    print
+    print time.time() - start
 
+    start = time.time()
     K2 = whitney_innerproduct(sc, k=1).todense()
-    print K2
-    print
+    print time.time() - start
+
+
+def main():
+    # test_orientation()
+    # test_square()
+
+    vertices = np.array([
+        [0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
+    ])
+
+    simplices = np.array([
+        [0, 1, 2],
+        [1, 2, 3],
+    ])
+
+    sc = simplicial_complex(vertices, simplices)
+
+    indices = np.array([0, 0, 1, 1, 2, 2])
+
+    coeffs = np.array([1.0, -1.0, 1.0, -1.0, 1.0, -1.0])
+
+    powers = np.array([
+        [1, 0, 0],
+        [0, 1, 0],
+        [1, 0, 0],
+        [0, 0, 1],
+        [0, 1, 0],
+        [0, 0, 1],
+    ])
+
+    wedges = np.array([
+        [1],
+        [0],
+        [2],
+        [0],
+        [2],
+        [1],
+    ])
+
+    sigmas = np.array([
+        [0, 1],
+        [0, 2],
+        [1, 2],
+    ])
+
+    lookup = {}
+    ordering = []
+
+    for simplex in simplices:
+        simplex_ordering = []
+        for sigma in sigmas:
+            key = simplex[sigma].tostring()
+            if key not in lookup:
+                lookup[key] = len(lookup)
+            simplex_ordering.append(lookup[key])
+        ordering.append(simplex_ordering)
+
+    ordering = np.array(ordering)
+
+    # consider factoring out a fem data {} object which
+    # we can build into an extendable framework.
+
+    start = time.time()
+    u = whitney_elements(indices, coeffs, powers, wedges, ordering)
+    K1 = inner(sc, u, u).todense()
+    print time.time() - start
+
+    start = time.time()
+    K2 = whitney_innerproduct(sc, k=1).todense()
+    print time.time() - start
+
+
+    # from modepy import XiaoGimbutasSimplexQuadrature
+
+    # quadrature = XiaoGimbutasSimplexQuadrature(order=5, dims=2)
+
+    # nodes = (quadrature.nodes + 1.0) / 2.0
+    # nodes = np.vstack([-np.sum(nodes, axis=0), nodes])
+    # weights = quadrature.weights / 2.0
+    # l0, l1, l2 = nodes
+
+    # C = np.array([1.0, -1.0])
+
+    # P = np.array([
+    #     [1, 0, 0],
+    #     [0, 1, 0],
+    # ])
+
+    # CC = C[:, None] * C
+    # PP = P[:, None] + P
+
+    # print np.sum(np.prod(nodes ** PP[:, :, None], axis=1)*CC[:, None]*weights, axis=0)
+
+    # print np.sum((l1*l1*weights +
+    #        -l1*l2*weights +
+    #        -l1*l2*weights +
+    #        l2*l2*weights))
 
 
 if __name__ == '__main__':
