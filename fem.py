@@ -8,13 +8,17 @@ from scipy.misc import factorial
 from scipy.sparse import csr_matrix
 
 
-def barycentric_integral(powers, volumes):
+# TODO: This should probably be refactored to NOT use volumes! (Jan 15 2015)
+def barycentric_beta(powers, volumes):
     """
     Integral on standard n-simplex of barycentric monomials:
 
          a0       a1          an
     lambda   lambda  ... lambda
 
+    The naming of this function `beta` comes from the fact that
+    the standard beta function agrees with this in one-dimension,
+    so you may argue this is a generalization to simplices.
     """
     n = powers.shape[-1] - 1
     integrals_on_ref = (np.prod(factorial(powers), axis=-1) /
@@ -118,16 +122,12 @@ def element_from_signature(n, k, sig):
 import time
 
 
-def barycentric_diffs(n):
+def barycentric_differentials(n):
     return np.column_stack([-np.ones(n), np.eye(n)])
 
 
 def grads_from_diffs(metric, diffs):
     return la.solve(metric, diffs)
-
-
-def cartesian_product(*args):
-    return map(np.ravel, np.meshgrid(*args))
 
 
 def inner(sc, u, v):
@@ -138,24 +138,21 @@ def inner(sc, u, v):
     dual_metrics = np.array(map(la.inv, metrics))
 
     volumes = np.sqrt(la.det(metrics)) / factorial(sc.complex_dimension())
-    # volumes[sc[-1].simplex_parity == 0] *= -1.0
-
-    print volumes
 
     coeffs = u.coeffs[:, None] * v.coeffs
     powers = u.powers[:, None] + v.powers
-    integrals = barycentric_integral(powers, volumes)
+    integrals = barycentric_beta(powers, volumes)
 
-    # integrals_upper = ...
-    # integrals_lower = ... (all the same power...so same result.)
-
-    diffs = barycentric_diffs(sc.complex_dimension())
+    diffs = barycentric_differentials(sc.complex_dimension())
 
     inners = np.array([np.dot(diffs.T, np.dot(dual_metric, diffs))
                        for dual_metric in dual_metrics])
 
     dets = np.empty((len(sc[-1].simplices), len(u.wedges), len(v.wedges)))
 
+    # this next chuck vectorizes along simplices so
+    # we only end up doing a small number of loops
+    # through pairs of elements
     for i1, w1 in enumerate(u.wedges):
         minors = inners[:, w1]
         for i2, w2 in enumerate(v.wedges):
@@ -289,15 +286,92 @@ def test_square():
     print time.time() - start
 
 
-def main():
-    # test_orientation()
-    # test_square()
+def test_spooky():
+    vertices = np.array([
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [0.0, 1.0],
+        [1.0, 1.0],
+    ])
+
+    simplices = np.array([
+        [0, 1, 2],
+        [1, 2, 3],
+    ])
+
+    sc = simplicial_complex(vertices, simplices)
+
+    K1 = whitney_innerproduct(sc, k=1).todense()
 
     vertices = np.array([
         [0.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0],
         [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
         [1.0, 1.0, 0.0],
+    ])
+
+    simplices = np.array([
+        [0, 1, 2],
+        [1, 2, 3],
+    ])
+
+    sc = simplicial_complex(vertices, simplices)
+
+    K2 = whitney_innerproduct(sc, k=1).todense()
+
+    print K1
+    print
+    print K2
+    print
+
+
+def unique_rows(a):
+    a = np.ascontiguousarray(a)
+    b = a.view(np.dtype((np.void, a.itemsize * a.shape[-1])))
+    return np.unique(b, return_inverse=True)
+
+
+def test_total_volume():
+    vertices = np.array([
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [0.0, 1.0],
+        [1.0, 1.0],
+    ])
+
+    simplices = np.array([
+        [0, 1, 2],
+        [1, 2, 3],
+    ])
+
+    sc = simplicial_complex(vertices, simplices)
+
+    indices = np.array([0])
+
+    coeffs = np.array([1.0])
+
+    powers = np.array([
+        [0, 0, 0],
+    ])
+
+    wedges = np.array([
+        [0, 1],
+    ])
+
+
+def main():
+    # test_orientation()
+    # test_square()
+    # test_spooky()
+
+    # vertices = np.loadtxt('square.node', skiprows=1, usecols=(1, 2), dtype=np.float)
+    # simplices = np.loadtxt('square.ele', skiprows=1, usecols=(1, 2, 3), dtype=np.int)
+
+    vertices = np.array([
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [0.0, 1.0],
+        [1.0, 1.0],
     ])
 
     simplices = np.array([
@@ -329,37 +403,34 @@ def main():
         [1],
     ])
 
+    alphas = np.array([
+        [],
+        [],
+        [],
+    ], dtype=np.int)
+
     sigmas = np.array([
         [0, 1],
         [0, 2],
         [1, 2],
-    ])
+    ], dtype=np.int)
 
-    lookup = {}
-    ordering = []
+    signatures = np.column_stack([alphas, sigmas])
 
-    for simplex in simplices:
-        simplex_ordering = []
-        for sigma in sigmas:
-            key = simplex[sigma].tostring()
-            if key not in lookup:
-                lookup[key] = len(lookup)
-            simplex_ordering.append(lookup[key])
-        ordering.append(simplex_ordering)
-
-    ordering = np.array(ordering)
+    signatures_on_simplices = simplices[:, signatures].reshape(-1, signatures.shape[-1])
+    unique, inverse = unique_rows(signatures_on_simplices)
+    ordering = inverse.reshape(simplices.shape[0], signatures.shape[0])
 
     # consider factoring out a fem data {} object which
     # we can build into an extendable framework.
 
-    start = time.time()
     u = whitney_elements(indices, coeffs, powers, wedges, ordering)
     K1 = inner(sc, u, u).todense()
-    print time.time() - start
+    print K1
 
-    start = time.time()
-    K2 = whitney_innerproduct(sc, k=1).todense()
-    print time.time() - start
+    # start = time.time()
+    # K2 = whitney_innerproduct(sc, k=1).todense()
+    # print time.time() - start
 
 
     # from modepy import XiaoGimbutasSimplexQuadrature
