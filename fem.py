@@ -1,30 +1,11 @@
 import numpy as np
-import numpy.linalg as la
 from itertools import combinations
 from itertools import combinations_with_replacement
 from pydec import simplicial_complex
-from pydec.fem import whitney_innerproduct
-from scipy.misc import factorial
-from scipy.sparse import csr_matrix
-# import time
-
-
-# TODO: This should probably be refactored to NOT use volumes! (Jan 15 2015)
-def barycentric_beta(powers, volumes):
-    """
-    Integral on standard n-simplex of barycentric monomials:
-
-         a0       a1          an
-    lambda   lambda  ... lambda
-
-    The naming of this function `beta` comes from the fact that
-    the standard beta function agrees with this in one-dimension,
-    so you may argue this is a generalization to simplices.
-    """
-    n = powers.shape[-1] - 1
-    integrals_on_ref = (np.prod(factorial(powers), axis=-1) /
-                        factorial(np.sum(powers, axis=-1) + n))
-    return integrals_on_ref * factorial(n) * volumes[:, None, None]
+from innerproduct import whitney_innerproduct
+from innerproduct import projection
+from innerproduct import quadrature_nodes_and_weights
+from itertools import izip
 
 
 class whitney_element(object):
@@ -43,6 +24,14 @@ class whitney_elements(object):
         self.powers = powers
         self.wedges = wedges
         self.ordering = ordering
+        self.dimension = np.max(ordering)+1
+        self.num_terms = len(coeffs)
+
+    def __iter__(self):
+        return izip(self.indices,
+                    self.coeffs,
+                    self.powers,
+                    self.wedges)
 
     def d(self):
         # d_indices = []
@@ -113,69 +102,43 @@ def element_from_signature(n, k, sig):
     return whitney_element(coeffs, powers, wedges)
 
 
-def barycentric_differentials(n):
-    return np.column_stack([-np.ones(n), np.eye(n)])
-
-
-def grads_from_diffs(metric, diffs):
-    return la.solve(metric, diffs)
-
-
-def pullback_metric(frame):
-    return np.inner(frame, frame)
-
-
-def inner(sc, u, v):
-    vertices = sc.vertices
-    simplices = sc[-1].simplices
-
-    points = vertices[simplices]
-    frames = points[:, 1:] - points[:, 0, None]
-
-    metrics = np.array(map(pullback_metric, frames))
-    dual_metrics = np.array(map(la.inv, metrics))
-
-    volumes = np.sqrt(la.det(metrics)) / factorial(sc.complex_dimension())
-    # volumes[sc[-1].simplex_parity == 1] *= -1.0
-
-    coeffs = u.coeffs[:, None] * v.coeffs
-    powers = u.powers[:, None] + v.powers
-    integrals = barycentric_beta(powers, volumes)
-
-    diffs = barycentric_differentials(sc.complex_dimension())
-
-    inners = np.array([np.dot(diffs.T, np.dot(dual_metric, diffs))
-                       for dual_metric in dual_metrics])
-
-    dets = np.empty((len(simplices), len(u.wedges), len(v.wedges)))
-
-    # this next chuck vectorizes along simplices so
-    # we only end up doing a small number of loops
-    # through pairs of elements
-    for i1, w1 in enumerate(u.wedges):
-        minors = inners[:, w1]
-        for i2, w2 in enumerate(v.wedges):
-            dets[:, i1, i2] = la.det(minors[:, :, w2])
-
-    indices1, indices2 = np.meshgrid(u.indices, v.indices)
-    rows = u.ordering[:, indices1.ravel()].ravel()
-    cols = v.ordering[:, indices2.ravel()].ravel()
-    data = (coeffs * integrals * dets).ravel()
-
-    return csr_matrix((data, (rows, cols)))
-
-
 def unique_rows(a):
     a = np.ascontiguousarray(a)
     b = a.view(np.dtype((np.void, a.itemsize * a.shape[-1])))
     return np.unique(b, return_inverse=True)
 
 
-def main():
-    vertices = np.loadtxt('square.node', skiprows=1, usecols=(1, 2), dtype=np.float)
-    simplices = np.loadtxt('square.ele', skiprows=1, usecols=(1, 2, 3), dtype=np.int)
+def compute_ordering(simplices, alphas, sigmas):
+    num_simplices = simplices.shape[0]
 
-    sc = simplicial_complex(vertices, simplices)
+    sigmas_on_simplices = simplices[:, sigmas].reshape(-1, sigmas.shape[-1])
+    sigmas_on_simplices.sort()
+
+    if alphas is None or alphas.shape[-1] == 0:
+        signatures_on_simplices = sigmas_on_simplices
+    else:
+        alphas_on_simplices = simplices[:, alphas].reshape(-1, alphas.shape[-1])
+        alphas_on_simplices.sort()
+        signatures_on_simplices = np.column_stack([
+            alphas_on_simplices,
+            sigmas_on_simplices
+        ])
+
+    unique, inverse = unique_rows(signatures_on_simplices)
+    ordering = inverse.reshape(num_simplices, -1)
+
+    return ordering
+
+
+def read_mesh():
+    vertices = np.loadtxt('square.node', skiprows=1, usecols=(1, 2), dtype=np.float)
+    vertices = np.column_stack([vertices, np.zeros(vertices.shape[0])])
+    simplices = np.loadtxt('square.ele', skiprows=1, usecols=(1, 2, 3), dtype=np.int)
+    return simplicial_complex(vertices, simplices)
+
+
+def main():
+    sc = read_mesh()
 
     indices = np.array([0, 0, 1, 1, 2, 2])
 
@@ -211,45 +174,15 @@ def main():
         [1, 2],
     ], dtype=np.int)
 
-    signatures = np.column_stack([alphas, sigmas])
+    ordering = compute_ordering(sc[-1].simplices, alphas, sigmas)
 
-    sigmas_on_simplices = simplices[:, sigmas].reshape(-1, sigmas.shape[-1])
-    sigmas_on_simplices.sort()
-
-    if alphas.shape[-1] == 0:
-        signatures_on_simplices = sigmas_on_simplices
-    else:
-        alphas_on_simplices = simplices[:, alphas].reshape(-1, alphas.shape[-1])
-        alphas_on_simplices.sort()
-        signatures_on_simplices = np.column_stack([
-            alphas_on_simplices,
-            sigmas_on_simplices
-        ])
-
-    print signatures_on_simplices
-
-    # print sigmas_on_simplices
-
-    unique, inverse = unique_rows(signatures_on_simplices)
-    ordering = inverse.reshape(simplices.shape[0], signatures.shape[0])
-
-    # consider factoring out a fem data {} object which
-    # we can build into an extendable framework.
-
-    import matplotlib.pyplot as plt
+    def f1(x, y, z): return x
+    def f2(x, y, z): return y
+    f = [(f1, np.array([0])), (f2, np.array([1]))]
 
     u = whitney_elements(indices, coeffs, powers, wedges, ordering)
-    K1 = inner(sc, u, u).todense()
-    plt.figure()
-    plt.title('My Inner Product')
-    plt.imshow(K1, interpolation='nearest')
-
-    K2 = whitney_innerproduct(sc, k=1).todense()
-    plt.figure()
-    plt.title('Current Implementation')
-    plt.imshow(K2, interpolation='nearest')
-
-    plt.show()
+    # K = whitney_innerproduct(sc, u, u)
+    projection(sc, u, f)
 
 
 if __name__ == '__main__':
